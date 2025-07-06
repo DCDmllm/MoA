@@ -82,7 +82,7 @@ class SoftMoAModel(nn.Module):
             for prefix in self.prefix:
                 if prefix in name:
                     param.requires_grad = True
-                    param.data = param.data.float()
+                    # param.data = param.data.float()
 
         for active_adapter in self.active_adapters:
             bias = self.peft_config[active_adapter].bias

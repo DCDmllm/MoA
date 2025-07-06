@@ -117,26 +117,37 @@ if __name__ == '__main__':
     tokenizer = AutoTokenizer.from_pretrained(
         model_path,
         padding_side="left",
-        # add_bos_token=True,
-        add_eos_token=True,
+        add_eos_token=True, # not work for Qwen3
     )
-    tokenizer.pad_token = tokenizer.eos_token
 
     # Tokenize datasets
-    tokenize_text = lambda examples: tokenizer(
-        examples["text"],
-        truncation=True,
-        max_length=max_length,
-        # padding=True,
-        # return_tensors="pt",
-    )
+    # tokenize_text = lambda examples: tokenizer(
+    #     examples["text"],
+    #     truncation=True,
+    #     max_length=max_length,
+    #     # padding=True,
+    #     # return_tensors="pt",
+    # )
+    def tokenize_text(examples):
+        out = tokenizer(examples["text"],
+                truncation=True,
+                max_length=max_length,
+                # padding=True,
+                # return_tensors="pt",
+            )
+        # print(len(examples["text"]))
+        out['input_ids'].append(tokenizer.convert_tokens_to_ids(tokenizer.eos_token))
+        out['attention_mask'].append(1)
+        return out
+    
     tokenized_datasets = formatted_datasets.map(
         tokenize_text,
-        batched=True,
+        batched=False,
         remove_columns=formatted_datasets["train"].column_names,
     )
     print(f'Tokenized datasets: {tokenized_datasets}')
-
+    print('Tokenized datasets train 0: ', tokenized_datasets['train']['input_ids'][0])
+    print('exist eos token: ', tokenizer.convert_tokens_to_ids(tokenizer.eos_token) in tokenized_datasets['train']['input_ids'][0])      
     # Set the data collator
     data_collator = DataCollatorForLanguageModeling(
         tokenizer, mlm=False, pad_to_multiple_of=8, return_tensors="pt")

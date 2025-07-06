@@ -279,7 +279,7 @@ def format_text(example, data_name: str, prompt_only: bool = True):
         text += "Answer: "
         example['answer'] = chr(ord('A') + example['answer'])
         example['num_choices'] = 5  # undefined
-    elif data_name == 'math_14k':
+    elif data_name in ['math_14k','addsub','aqua','gsm8k','multiarith','singleeq','svamp']:
         PROMPT_DICT = {
         "prompt_input": (
             "Below is an instruction that describes a task, paired with an input that provides further context. "
@@ -291,13 +291,19 @@ def format_text(example, data_name: str, prompt_only: bool = True):
             "Write a response that appropriately completes the request.\n\n"
             "### Instruction:\n{instruction}\n\n### Response:"
         )}
-        text = PROMPT_DICT["prompt_no_input"].format_map(example)
-        example["answer"] = example["output"]
+        if example["input"]:
+            text = PROMPT_DICT["prompt_input"].format_map(example)
+        else:
+            text = PROMPT_DICT["prompt_no_input"].format_map(example)
     else:
+        print(f'Unknown data name: {data_name}')
         raise NotImplementedError
 
     if not prompt_only:
-        text += f"{example['answer']}"
+        if data_name in ['math_14k','addsub','aqua','gsm8k','multiarith','singleeq','svamp']:
+            text += f"{example['output']}"
+        else:
+            text += f"{example['answer']}"
     example['data_name'] = data_name
     example['text'] = text
     return example
@@ -348,16 +354,17 @@ def get_formatted_datasets(data_path: str, prompt_only: bool):
             datasets = datasets.filter(lambda example: example["image"] is None)
         else:
             datasets = load_dataset(path=data_path)
+        split_0 = list(datasets.keys())[0]
         print(f'Datasets: {datasets}')
-        print(f"Example: {datasets['train'][0]}")
+        print(f"Example: {datasets[split_0][0]}")
 
         # Format datasets
         formatted_datasets = datasets.map(
             lambda example: format_text(example, data_name, prompt_only=prompt_only),
             batched=False, load_from_cache_file=False)
         print(f'Formatted datasets: {formatted_datasets}')
-        print(f"Formatted example: {formatted_datasets['train'][0]}")
-        print(f"Text example:\n{formatted_datasets['train']['text'][0]}")
+        print(f"Formatted example: {formatted_datasets[split_0][0]}")
+        print(f"Text example:\n{formatted_datasets[split_0]['text'][0]}")
 
     return formatted_datasets
 
