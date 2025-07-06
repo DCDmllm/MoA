@@ -31,8 +31,6 @@ python evaluate_math.py --predict_file ...predictions/addsub_responses.jsonl
 
 If you find AdaMoLE useful in your projects, please consider citing our paper:
 
-Liu, Z., & Luo, J. (2024). AdaMoLE: Fine-Tuning Large Language Models with Adaptive Mixture of Low-Rank Adaptation Experts. arXiv preprint *arXiv:2405.00361*.
-
 ```bibtex
 @article{cao2025moa,
   title={MoA: Heterogeneous Mixture of Adapters for Parameter-Efficient Fine-Tuning of Large Language Models},
