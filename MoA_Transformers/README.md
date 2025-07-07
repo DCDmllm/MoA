@@ -29,7 +29,7 @@ python evaluate_math.py --predict_file ...predictions/addsub_responses.jsonl
 
 ## Citation
 
-If you find AdaMoLE useful in your projects, please consider citing our paper:
+If you find MoA useful in your projects, please consider citing our paper:
 
 ```bibtex
 @article{cao2025moa,
