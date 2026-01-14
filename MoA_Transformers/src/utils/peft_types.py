@@ -12,9 +12,6 @@ class PeftType(str, enum.Enum):
     """
     PEFT Adapter Types
     """
-    LORA = "LORA"
-    MOLE = "MOLE"
-    ADAMOLE = "ADAMOLE"
     SOFTMOA = "SOFTMOA"
     SPARSEMOA = "SPARSEMOA"
 

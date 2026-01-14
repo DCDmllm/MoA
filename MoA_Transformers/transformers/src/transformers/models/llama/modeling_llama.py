@@ -47,6 +47,105 @@ from .configuration_llama import LlamaConfig
 logger = logging.get_logger(__name__)
 
 
+# add for MoA
+
+class LoraLayer(nn.Module):
+    def __init__(self, input_dim, output_dim, r, lora_alpha:float=8):
+        super().__init__()
+        self.scaling = lora_alpha / r
+        self.params_num = 0
+
+        self.lora_A = nn.Linear(input_dim, r, bias=False)
+        self.lora_B = nn.Linear(r, output_dim, bias=False)
+        nn.init.zeros_(self.lora_B.weight)
+
+        self.output_dim = output_dim
+    
+    def params_count(self):
+        self.params_num = 0
+    
+        self.params_num += torch.numel(self.lora_A.weight)
+        self.params_num += torch.numel(self.lora_B.weight)
+
+        return self.params_num
+
+    def forward(self, x: torch.Tensor, type_weight: Optional[torch.Tensor]):
+        # type_weight: [bsz, seqlen]
+        results = torch.zeros(x.shape[0], x.shape[1], self.output_dim, dtype=x.dtype, device=x.device) # [bsz, seqlen, output_dim]
+
+        batch_idx = torch.where(type_weight)
+
+        selected_x = x[batch_idx] # [m, dim] ,m tokens selected for this expert
+        selected_x = self.lora_B(self.lora_A(selected_x)) * self.scaling  # selected_x 为空是允许的
+
+        if len(batch_idx[0])>0:
+            results[batch_idx] += type_weight[batch_idx].unsqueeze(-1) * selected_x
+        
+        return results
+
+
+class PAdapterLayer(nn.Module):
+    def __init__(self, hidden_size, adapter_size):
+        super(PAdapterLayer, self).__init__()
+        self.hidden_size = hidden_size
+        self.adapter_size = adapter_size
+
+        self.adapter_act_fn = nn.SiLU()
+
+        self.down_proj = nn.Linear(hidden_size, adapter_size)
+        self.up_proj = nn.Linear(adapter_size, hidden_size)
+        
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        nn.init.xavier_uniform_(self.down_proj.weight, gain=1e-4)
+        nn.init.xavier_uniform_(self.up_proj.weight, gain=1e-4)
+        nn.init.constant_(self.down_proj.bias, 0.0)
+        nn.init.constant_(self.up_proj.bias, 0.0)
+
+    def forward(self, x, type_weight: Optional[torch.Tensor]):
+        # type_weight: [bsz, seqlen]
+        results = torch.zeros_like(x) # [bsz, seqlen, dim]
+
+        batch_idx = torch.where(type_weight)
+
+        selected_x = x[batch_idx] # [m, dim] ,m tokens selected for this expert
+        selected_x = self.up_proj(self.adapter_act_fn(self.down_proj(selected_x)))
+
+        if len(batch_idx[0])>0:
+            results[batch_idx] += type_weight[batch_idx].unsqueeze(-1) * selected_x
+
+        return results
+
+
+class Router(nn.Module):
+    def __init__(
+        self,
+        in_dim: int,
+        hidden_dim: int,
+        out_dim: int 
+    ):
+        super().__init__()
+
+        self.w1 = nn.Linear(
+            in_dim, hidden_dim
+        )
+        self.w2 = nn.Linear(
+            hidden_dim, out_dim
+        )
+        self.w3 = nn.Linear(
+            in_dim, hidden_dim
+        )
+        
+        nn.init.constant_(self.w1.bias.data, 0)
+        nn.init.constant_(self.w2.bias.data, 0)
+        nn.init.constant_(self.w3.bias.data, 0)
+    
+    def forward(self, x):
+        return self.w2(nn.functional.silu(self.w1(x)) * self.w3(x))
+# end moa
+
+
 @use_kernel_forward_from_hub("RMSNorm")
 class LlamaRMSNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
@@ -147,8 +246,16 @@ class LlamaMLP(nn.Module):
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=config.mlp_bias)
         self.act_fn = ACT2FN[config.hidden_act]
 
-    def forward(self, x):
-        down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+        lora_rank = 8
+        lora_alpha = lora_rank * 1
+        self.lora_down = LoraLayer(self.intermediate_size, self.hidden_size, lora_rank, lora_alpha)
+
+    def forward(self, x, type_weight:Optional[torch.Tensor]):
+        # down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+        # add for moa
+        x = self.act_fn(self.gate_proj(x)) * self.up_proj(x)
+        type_idx = 0
+        down_proj = self.down_proj(x) + self.lora_down(x, type_weight[:,:,type_idx])
         return down_proj
 
 
@@ -216,11 +323,29 @@ class LlamaAttention(nn.Module):
             config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.attention_bias
         )
 
+
+        # moa
+        self.num_key_value_heads = config.num_key_value_heads
+        lora_rank = 8
+        lora_alpha = lora_rank * 1
+        self.lora_Q = LoraLayer(config.hidden_size, config.num_attention_heads * self.head_dim, lora_rank, lora_alpha)
+        self.lora_K = LoraLayer(config.hidden_size, config.num_key_value_heads * self.head_dim, lora_rank, lora_alpha)
+        self.lora_V = LoraLayer(config.hidden_size, config.num_key_value_heads * self.head_dim, lora_rank, lora_alpha)
+        self.lora_O = LoraLayer(config.num_attention_heads * self.head_dim, config.hidden_size, lora_rank, lora_alpha)
+        
+        self.w_prompt = False
+        if self.w_prompt:
+            self.prompt_len = 10
+            self.prompt = nn.Embedding(self.prompt_len, config.hidden_size)
+            self.prompt_gate = torch.nn.Parameter(torch.zeros(1, config.num_attention_heads, 1, 1))
+
+
     def forward(
         self,
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attention_mask: Optional[torch.Tensor],
+        type_weight: Optional[torch.Tensor],
         past_key_value: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
@@ -228,9 +353,28 @@ class LlamaAttention(nn.Module):
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        query_states = self.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
-        key_states = self.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
-        value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        # query_states = self.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        # key_states = self.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        # value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+
+        # moa
+        query_states = self.q_proj(hidden_states)
+        key_states = self.k_proj(hidden_states)
+        value_states = self.v_proj(hidden_states)
+
+        type_idx = 0
+        query_states = query_states + self.lora_Q(hidden_states, type_weight[:,:,type_idx])
+        type_idx += 1
+        key_states = key_states + self.lora_K(hidden_states, type_weight[:,:,type_idx])
+        type_idx += 1
+        value_states = value_states + self.lora_V(hidden_states, type_weight[:,:,type_idx])
+        type_idx += 1
+
+        query_states = query_states.view(hidden_shape).transpose(1, 2)
+        key_states = key_states.view(hidden_shape).transpose(1, 2)
+        value_states = value_states.view(hidden_shape).transpose(1, 2)
+        # moa end
+
 
         cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
@@ -256,7 +400,41 @@ class LlamaAttention(nn.Module):
         )
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
-        attn_output = self.o_proj(attn_output)
+
+        # moa prompt
+        # sparse computing can not work for prompt-tuning, using non-sparse way
+        # need train in float32 or fix bugs in bf16
+        if self.w_prompt:
+            bsz, seqlen, _ = attn_output.shape
+            type_weight_prompt = type_weight[:,:,type_idx] 
+
+            prompt = self.prompt.weight
+            prompt_k = self.k_proj(prompt).view(1, self.prompt_len, self.num_key_value_heads, self.head_dim).repeat(bsz, 1, 1, 1)
+            prompt_v = self.v_proj(prompt).view(1, self.prompt_len, self.num_key_value_heads, self.head_dim).repeat(bsz, 1, 1, 1)
+
+            prompt_k = prompt_k.transpose(1, 2)
+            prompt_v = prompt_v.transpose(1, 2) # [bs, n_local_heads, prompt_len, head_dim]
+
+            prompt_k = repeat_kv(prompt_k, self.num_key_value_groups) # [bs, n_local_heads, prompt_len, head_dim]
+            prompt_v = repeat_kv(prompt_v, self.num_key_value_groups)
+            
+            # prompt_scores = torch.matmul(query_states, prompt_k.transpose(2, 3)) / math.sqrt(self.head_dim) # [bs, n_local_heads, seqlen, prompt_len]
+            prompt_scores = torch.matmul(query_states, prompt_k.transpose(2, 3)) * self.scaling # [bs, n_local_heads, seqlen, prompt_len]
+            
+            prompt_scores = self.prompt_gate * nn.functional.softmax(prompt_scores, dim=-1, dtype=torch.float32).type_as(query_states)
+            
+            prompt_output = torch.matmul(prompt_scores, prompt_v) # [bsz, local_heads, seqlen, head_dim]
+            prompt_output = prompt_output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
+
+            prompt_output = prompt_output * type_weight_prompt.unsqueeze(-1)
+            
+            attn_output = attn_output + prompt_output
+
+            type_idx += 1
+
+
+        # attn_output = self.o_proj(attn_output)
+        attn_output = self.o_proj(attn_output) + self.lora_O(attn_output, type_weight[:,:,type_idx])
         return attn_output, attn_weights
 
 
@@ -270,6 +448,43 @@ class LlamaDecoderLayer(GradientCheckpointingLayer):
         self.mlp = LlamaMLP(config)
         self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+
+        # moa
+        self.w_padapter = True
+        w_prompt = False # prompt expert need float32 or mixed precision training
+        swi_x = 4
+        p_adapter_size = 16
+        self.p_adapter = PAdapterLayer(self.hidden_size, p_adapter_size)
+        self.adapter_num = 0
+        self.attention_num = 0
+        self.FFN_num = 0
+
+        lora_targets = "Q,K,V,O,FFN_DOWN"
+        lora_targets = lora_targets.split(',')
+        self.adapter_num += len(lora_targets)
+        attention_targets = ['Q', 'K', 'V', 'O']
+        FFN_targets = ['FFN_UP', 'FFN_GATE', 'FFN_DOWN']
+        for x in lora_targets:
+            if x in attention_targets:
+                self.attention_num += 1
+            if x in FFN_targets:
+                self.FFN_num += 1
+        if w_prompt:
+            self.adapter_num += 1
+            self.attention_num += 1
+        if self.w_padapter:
+            self.adapter_num += 1
+        
+        if swi_x == 0:
+            self.adapter_type_router = nn.Linear(self.hidden_size, self.adapter_num)
+        elif swi_x > 0:
+            self.adapter_type_router = Router(self.hidden_size, self.adapter_num * swi_x, self.adapter_num)
+        
+        self.const_threshold = False
+        if not self.const_threshold:
+            self.adapter_threshold_fn = nn.Linear(self.hidden_size, 1)
+        self.max_threshold = 0.5
+
 
     def forward(
         self,
@@ -286,10 +501,25 @@ class LlamaDecoderLayer(GradientCheckpointingLayer):
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
 
+        # moa
+        ori_type_weights = nn.functional.sigmoid(self.adapter_type_router(hidden_states)).to(hidden_states.dtype)   # [bsz, seqlen, adapter_type]
+
+        if self.const_threshold:
+            thresholds = self.max_threshold
+        else:
+            thresholds = nn.functional.sigmoid(self.adapter_threshold_fn(hidden_states)) * self.max_threshold # [bsz, seqlen, 1]
+        adapted_type_weights = ori_type_weights - thresholds
+        selected_experts = torch.ge(adapted_type_weights, 0).to(torch.float)
+
+        type_weights = ori_type_weights * selected_experts 
+        type_idx = 0
+        # end moa
+
         # Self Attention
         hidden_states, self_attn_weights = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
+            type_weight=type_weights[:,:,type_idx:type_idx+self.attention_num],
             position_ids=position_ids,
             past_key_value=past_key_value,
             output_attentions=output_attentions,
@@ -298,13 +528,21 @@ class LlamaDecoderLayer(GradientCheckpointingLayer):
             position_embeddings=position_embeddings,
             **kwargs,
         )
+        type_idx += self.attention_num
+
         hidden_states = residual + hidden_states
 
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states)
-        hidden_states = residual + hidden_states
+        # hidden_states = self.mlp(hidden_states)
+        # hidden_states = residual + hidden_states
+        hidden_states_t = self.mlp(hidden_states, type_weight=type_weights[:,:,type_idx:type_idx+self.FFN_num])
+        type_idx += self.FFN_num
+        if self.w_padapter:
+            adapter_states = self.p_adapter(hidden_states, type_weight=type_weights[:,:,type_idx])
+            hidden_states_t = hidden_states_t + adapter_states
+        hidden_states = residual + hidden_states_t
 
         outputs = (hidden_states,)
         if output_attentions:

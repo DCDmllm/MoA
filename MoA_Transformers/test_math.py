@@ -23,7 +23,7 @@ from data import get_formatted_datasets
 from src import PeftConfig, PeftModelForCausalLM
 
 transformers.set_seed(0)
-device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
 if __name__ == '__main__':
@@ -71,6 +71,11 @@ if __name__ == '__main__':
         peft_config.base_model_name_or_path,
         padding_side="left",
     )
+    if 'llama' in model_name:
+        print('------------setting pad_token_id for llama 3.1')
+        tokenizer.pad_token_id = (
+            128255 # reserved special token
+        ) # llama 3.1 don't have pad_token, pad_token should be different from eos_token
     model = PeftModelForCausalLM.from_pretrained(model=base_model, model_id=model_path)
     model.to(device)
     print(f'Model loaded from {model_path}')

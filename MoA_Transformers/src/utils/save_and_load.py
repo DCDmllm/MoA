@@ -36,24 +36,7 @@ def get_peft_model_state_dict(
     if state_dict is None:
         state_dict = model.state_dict()
 
-    if config.peft_type in (PeftType.LORA, PeftType.MOLE, PeftType.ADAMOLE):
-        bias = config.bias
-        if bias == "none":
-            to_return = {k: state_dict[k] for k in state_dict if "lora_" in k}
-        elif bias == "all":
-            to_return = {k: state_dict[k] for k in state_dict if "lora_" in k or "bias" in k}
-        elif bias == "lora_only":
-            to_return = {}
-            for k in state_dict:
-                if "lora_" in k:
-                    to_return[k] = state_dict[k]
-                    bias_name = k.split("lora_")[0] + "bias"
-                    if bias_name in state_dict:
-                        to_return[bias_name] = state_dict[bias_name]
-        else:
-            raise NotImplementedError
-        to_return = {k: v for k, v in to_return.items() if (("lora_" in k and adapter_name in k) or ("bias" in k))}
-    elif config.peft_type in (PeftType.SOFTMOA, PeftType.SPARSEMOA):
+    if config.peft_type in (PeftType.SOFTMOA, PeftType.SPARSEMOA):
         to_return = {k: state_dict[k] for k in state_dict if ("lora_" in k or "prompt" in k or "adapter" in k)}
     else:
         raise NotImplementedError
@@ -83,7 +66,6 @@ def get_peft_model_state_dict(
     elif save_embedding_layers:
         warnings.warn("Could not identify embedding layer(s) because the model is not a model in transformers.")
 
-    to_return = {k.replace(f".{adapter_name}", ""): v for k, v in to_return.items()}
     return to_return
 
 
@@ -110,31 +92,9 @@ def set_peft_model_state_dict(model, peft_model_state_dict: dict, adapter_name="
     else:
         state_dict = peft_model_state_dict
 
-    if config.peft_type in (PeftType.LORA, PeftType.MOLE, PeftType.ADAMOLE):
-        peft_model_state_dict = {}
-        parameter_prefix = {
-            PeftType.LORA: "lora_",
-            PeftType.MOLE: "lora_",
-            PeftType.ADAMOLE: "lora_",
-        }[config.peft_type]
-        for k, v in state_dict.items():
-            if parameter_prefix in k:
-                suffix = k.split(parameter_prefix)[1]
-                if "." in suffix:
-                    suffix_to_replace = ".".join(suffix.split(".")[1:])
-                    k = k.replace(suffix_to_replace, f"{adapter_name}.{suffix_to_replace}")
-                else:
-                    k = f"{k}.{adapter_name}"
-                peft_model_state_dict[k] = v
-            else:
-                peft_model_state_dict[k] = v
-    elif config.peft_type in (PeftType.SOFTMOA, PeftType.SPARSEMOA):
+    if config.peft_type in (PeftType.SOFTMOA, PeftType.SPARSEMOA):
         print('adapter_name: ', adapter_name, '\nconfig.peft_type: ', config.peft_type)
         # peft_model_state_dict = {}
-        parameter_prefix = {
-            PeftType.SOFTMOA: ["lora_", 'prompt', 'adapter'],
-            PeftType.SPARSEMOA: ["lora_", 'prompt', 'adapter'],
-        }[config.peft_type]
     else:
         raise NotImplementedError
     

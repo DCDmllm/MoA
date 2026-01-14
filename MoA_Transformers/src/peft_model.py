@@ -223,6 +223,18 @@ class PeftModel(PushToHubMixin, torch.nn.Module):
             if is_main_process:
                 peft_config.save_pretrained(output_dir)
             peft_config.inference_mode = inference_mode
+        
+        # save parameters count
+        if is_main_process:
+            trainable_params, all_param = self.get_nb_trainable_parameters()
+            # print(
+            #     f"trainable params: {trainable_params:,d} || all params: {all_param:,d} || "
+            #     f"trainable: {trainable_params / all_param:.2%}")
+            with open(os.path.join(save_directory, "param.txt"), "w") as f:
+                f.write(f"trainable params: {trainable_params:,d}\n")
+                f.write(f"all params: {all_param:,d}\n")
+                f.write(f"trainable: {trainable_params / all_param:.2%}\n")
+
 
     @classmethod
     def from_pretrained(

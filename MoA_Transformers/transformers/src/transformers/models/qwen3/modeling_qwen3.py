@@ -54,14 +54,35 @@ class LoraLayer(nn.Module):
     def __init__(self, input_dim, output_dim, r, lora_alpha:float=8):
         super().__init__()
         self.scaling = lora_alpha / r
+        self.params_num = 0
+
         self.lora_A = nn.Linear(input_dim, r, bias=False)
         self.lora_B = nn.Linear(r, output_dim, bias=False)
         nn.init.zeros_(self.lora_B.weight)
 
+        self.output_dim = output_dim
+    
+    def params_count(self):
+        self.params_num = 0
+    
+        self.params_num += torch.numel(self.lora_A.weight)
+        self.params_num += torch.numel(self.lora_B.weight)
+
+        return self.params_num
+
     def forward(self, x: torch.Tensor, type_weight: Optional[torch.Tensor]):
-        result = self.lora_B(self.lora_A(x)) * self.scaling
-        result = torch.unsqueeze(type_weight, -1) * result
-        return result
+        # type_weight: [bsz, seqlen]
+        results = torch.zeros(x.shape[0], x.shape[1], self.output_dim, dtype=x.dtype, device=x.device) # [bsz, seqlen, output_dim]
+
+        batch_idx = torch.where(type_weight)
+
+        selected_x = x[batch_idx] # [m, dim] ,m tokens selected for this expert
+        selected_x = self.lora_B(self.lora_A(selected_x)) * self.scaling  # selected_x 为空是允许的
+
+        if len(batch_idx[0])>0:
+            results[batch_idx] += type_weight[batch_idx].unsqueeze(-1) * selected_x
+        
+        return results
 
 
 class PAdapterLayer(nn.Module):
@@ -69,9 +90,12 @@ class PAdapterLayer(nn.Module):
         super(PAdapterLayer, self).__init__()
         self.hidden_size = hidden_size
         self.adapter_size = adapter_size
+
         self.adapter_act_fn = nn.SiLU()
+
         self.down_proj = nn.Linear(hidden_size, adapter_size)
         self.up_proj = nn.Linear(adapter_size, hidden_size)
+        
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -81,12 +105,18 @@ class PAdapterLayer(nn.Module):
         nn.init.constant_(self.up_proj.bias, 0.0)
 
     def forward(self, x, type_weight: Optional[torch.Tensor]):
-        x = self.down_proj(x)
-        x = self.adapter_act_fn(x)
-        x = self.up_proj(x)
-        
-        x = x * type_weight.unsqueeze(-1)
-        return x 
+        # type_weight: [bsz, seqlen]
+        results = torch.zeros_like(x) # [bsz, seqlen, dim]
+
+        batch_idx = torch.where(type_weight)
+
+        selected_x = x[batch_idx] # [m, dim] ,m tokens selected for this expert
+        selected_x = self.up_proj(self.adapter_act_fn(self.down_proj(selected_x)))
+
+        if len(batch_idx[0])>0:
+            results[batch_idx] += type_weight[batch_idx].unsqueeze(-1) * selected_x
+
+        return results
 
 
 class Router(nn.Module):
@@ -104,7 +134,7 @@ class Router(nn.Module):
         self.w2 = nn.Linear(
             hidden_dim, out_dim
         )
-        self.w3 =nn.Linear(
+        self.w3 = nn.Linear(
             in_dim, hidden_dim
         )
         
@@ -114,6 +144,7 @@ class Router(nn.Module):
     
     def forward(self, x):
         return self.w2(nn.functional.silu(self.w1(x)) * self.w3(x))
+# end moa
     
 
 @use_kernel_forward_from_hub("RMSNorm")
@@ -149,7 +180,7 @@ class Qwen3MLP(nn.Module):
         self.act_fn = ACT2FN[config.hidden_act]
 
         lora_rank = 8
-        lora_alpha = 8
+        lora_alpha = lora_rank * 1
         self.lora_down = LoraLayer(self.intermediate_size, self.hidden_size, lora_rank, lora_alpha)
 
     def forward(self, x, type_weight:Optional[torch.Tensor]):
@@ -264,7 +295,7 @@ class Qwen3Attention(nn.Module):
         # moa
         self.num_key_value_heads = config.num_key_value_heads
         lora_rank = 8
-        lora_alpha = 8
+        lora_alpha = lora_rank * 1
         self.lora_Q = LoraLayer(config.hidden_size, config.num_attention_heads * self.head_dim, lora_rank, lora_alpha)
         self.lora_K = LoraLayer(config.hidden_size, config.num_key_value_heads * self.head_dim, lora_rank, lora_alpha)
         self.lora_V = LoraLayer(config.hidden_size, config.num_key_value_heads * self.head_dim, lora_rank, lora_alpha)
@@ -387,7 +418,7 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
         # moa
         self.w_padapter = True
         w_prompt = False
-        swi_x = 0
+        swi_x = 4
         p_adapter_size = 16
         self.p_adapter = PAdapterLayer(self.hidden_size, p_adapter_size)
         self.adapter_num = 0
@@ -414,6 +445,11 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
             self.adapter_type_router = nn.Linear(self.hidden_size, self.adapter_num)
         elif swi_x > 0:
             self.adapter_type_router = Router(self.hidden_size, self.adapter_num * swi_x, self.adapter_num)
+        
+        self.const_threshold = False
+        if not self.const_threshold:
+            self.adapter_threshold_fn = nn.Linear(self.hidden_size, 1)
+        self.max_threshold = 0.5
 
     def forward(
         self,
@@ -430,7 +466,17 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
 
-        type_weights = nn.functional.sigmoid(self.adapter_type_router(hidden_states)).to(hidden_states.dtype)   # [bsz, seqlen, adapter_type]
+        ori_type_weights = nn.functional.sigmoid(self.adapter_type_router(hidden_states)).to(hidden_states.dtype)   # [bsz, seqlen, adapter_type]
+
+        if self.const_threshold:
+            thresholds = self.max_threshold
+        else:
+            thresholds = nn.functional.sigmoid(self.adapter_threshold_fn(hidden_states)) * self.max_threshold # [bsz, seqlen, 1]
+        adapted_type_weights = ori_type_weights - thresholds
+        selected_experts = torch.ge(adapted_type_weights, 0).to(torch.float)
+
+        type_weights = ori_type_weights * selected_experts 
+
         type_idx = 0
 
         # Self Attention

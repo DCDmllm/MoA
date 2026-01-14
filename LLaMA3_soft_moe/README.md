@@ -1,4 +1,3 @@
-# moe using different structure
-lora
-prompt
-parallel adatper
+# lora, padapter, prompt-tuning methods
+
+# soft moe methods: molora, hydralora,

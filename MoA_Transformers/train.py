@@ -6,7 +6,7 @@ import os
 import re
 
 os.environ['HF_HOME']="/data/workspace/cache/huggingface"
-os.environ['CUDA_VISIBLE_DEVICES']="0"
+# os.environ['CUDA_VISIBLE_DEVICES']="0"
 
 import torch
 import transformers
@@ -20,15 +20,10 @@ from transformers import (
 from data import get_formatted_datasets
 from src import (
     TaskType,
-    LoraConfig,
-    MoleConfig,
-    AdaMoleConfig,
     SoftMoAConfig,
     PeftTrainer,
     PeftModelForCausalLM,
 )
-
-transformers.set_seed(0)
 
 if __name__ == '__main__':
     # Add arguments
@@ -43,7 +38,7 @@ if __name__ == '__main__':
         '--data_path', type=str, default='tau/commonsense_qa',
         help='huggingface data id or local data path')
     parser.add_argument(
-        '--peft_type', type=str, default='lora', choices=['lora', 'mole', 'adamole', 'softmoa', 'sparsemoa'],
+        '--peft_type', type=str, default='lora', choices=['softmoa', 'sparsemoa'],
         help='peft model type to be fine-tuned')
     parser.add_argument(
         '--lora_rank', type=int, default=32,
@@ -87,10 +82,15 @@ if __name__ == '__main__':
     parser.add_argument(
         '--aux_loss_coeff', type=float, default=None,
         help='auxiliary loss coefficient for moe')
+    parser.add_argument(
+        '--seed', type=int, default=0,
+        help='random seed for training')
 
     # Parse arguments
     args = parser.parse_args()
     print(f'Arguments: {args}')
+    transformers.set_seed(args.seed)
+
     model_path = args.model_path
     data_path = args.data_path
     model_name = os.path.basename(model_path).lower()
@@ -98,17 +98,21 @@ if __name__ == '__main__':
     peft_type = args.peft_type
     num_experts = args.num_experts
     max_length = args.max_length
-    lora_rank = args.lora_rank if peft_type == 'lora' else args.lora_rank // num_experts
-    lora_alpha = 16
-    lora_dropout = 0.05
+    # lora_rank = args.lora_rank if peft_type == 'lora' else args.lora_rank // num_experts
+    lora_rank = args.lora_rank
+    lora_alpha = lora_rank * 1
+    lora_dropout = 0
     peft_type_name = peft_type
-    if args.top_k is not None:
-        peft_type_name += f'-top{args.top_k}'
-    if args.threshold is not None:
-        threshold_name = int(1 / args.threshold)
-        peft_type_name += f'-the{threshold_name}'
+    # if args.top_k is not None:
+    #     peft_type_name += f'-top{args.top_k}'
+    # if args.threshold is not None:
+    #     threshold_name = int(1 / args.threshold)
+    #     peft_type_name += f'-the{threshold_name}'
+
+    if args.seed != 0:
+        peft_type_name += f'-seed{args.seed}'
     output_dir = os.path.join('outputs', re.sub(r'[^0-9a-zA-Z]', '-', f'{model_name}-{peft_type_name}-{data_name}'))
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # Load and format datasets
     formatted_datasets = get_formatted_datasets(data_path=data_path, prompt_only=False)
@@ -119,6 +123,12 @@ if __name__ == '__main__':
         padding_side="left",
         add_eos_token=True, # not work for Qwen3
     )
+
+    if 'llama' in model_name:
+        print('------------setting pad_token_id for llama 3.1')
+        tokenizer.pad_token_id = (
+            128255 # reserved special token
+        ) # llama 3.1 don't have pad_token, pad_token should be different from eos_token
 
     # Tokenize datasets
     # tokenize_text = lambda examples: tokenizer(
@@ -156,22 +166,13 @@ if __name__ == '__main__':
     base_model = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
-        # device_map="auto",
+        device_map="auto",
     )
     print(f'Base model loaded from {model_path}')
     print(f'Base model: {base_model}')
 
     # Get the PEFT model
-    if peft_type == 'lora':
-        peft_config = LoraConfig(
-            lora_rank=lora_rank,
-            lora_alpha=lora_alpha,
-            lora_dropout=lora_dropout,
-            target_modules=args.target_modules,
-            task_type=TaskType.CAUSAL_LM,
-            bias="none",
-        )
-    elif peft_type == 'softmoa':
+    if peft_type == 'softmoa':
         peft_config = SoftMoAConfig(
             lora_rank=lora_rank,
             lora_alpha=lora_alpha,
@@ -180,28 +181,14 @@ if __name__ == '__main__':
             task_type=TaskType.CAUSAL_LM,
             bias="none",
         )
-    elif peft_type == 'mole':
-        peft_config = MoleConfig(
+    elif peft_type == 'sparsemoa':
+        peft_config = SoftMoAConfig(
             lora_rank=lora_rank,
             lora_alpha=lora_alpha,
             lora_dropout=lora_dropout,
             target_modules=args.target_modules,
             task_type=TaskType.CAUSAL_LM,
             bias="none",
-            num_experts=num_experts,
-            top_k=args.top_k,
-            threshold=args.threshold,
-        )
-    elif peft_type == 'adamole':
-        peft_config = AdaMoleConfig(
-            lora_rank=lora_rank,
-            lora_alpha=lora_alpha,
-            lora_dropout=lora_dropout,
-            target_modules=args.target_modules,
-            task_type=TaskType.CAUSAL_LM,
-            bias="none",
-            num_experts=num_experts,
-            max_threshold=args.threshold,
         )
     else:
         raise KeyError(f'Unsupported PEFT type: {peft_type}')
@@ -222,7 +209,7 @@ if __name__ == '__main__':
         eval_strategy="steps",
         eval_steps=200,
         save_strategy="epoch",
-        # save_steps=1000,
+        # save_steps=200,
         optim="adamw_torch",
         per_device_train_batch_size=args.batch_size,
         per_device_eval_batch_size=args.batch_size,
@@ -235,9 +222,8 @@ if __name__ == '__main__':
         weight_decay=args.weight_decay,
         bf16=True,
         bf16_full_eval=True,
-        # fsdp=True,
-        seed=0,
-        data_seed=0,
+        seed=args.seed,
+        data_seed=args.seed,
         report_to=["tensorboard"],
     )
     trainer = PeftTrainer(

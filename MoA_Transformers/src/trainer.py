@@ -47,6 +47,7 @@ class PeftTrainer(Trainer):
         Compute the loss by the trainer
         """
         outputs = model(**inputs)
+        self.model_accepts_loss_kwargs = False # perform loss gradient accumulation scale, otherwise model should accept num_items_in_batch and compute loss
         if "loss" in outputs:
             loss = outputs.get("loss")
         else:

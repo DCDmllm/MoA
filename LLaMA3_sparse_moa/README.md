@@ -1,4 +1,3 @@
-# sparse moe with different structure
-two router:
-one for adapter type (lora QKVO FFN_UP FFN_DOWN, prompt, parallel adapter)
-one for experts of same type
+# sparse moa with different structure
+Sparse activation adapter type: lora QKVO FFN_UP FFN_DOWN, parallel adapter
+
