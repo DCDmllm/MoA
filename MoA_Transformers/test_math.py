@@ -5,7 +5,7 @@ import argparse
 import json
 import os
 import re
-os.environ['HF_HOME']="/data/workspace/cache/huggingface"
+# os.environ['HF_HOME']="/data/workspace/cache/huggingface"
 
 import pandas as pd
 import torch

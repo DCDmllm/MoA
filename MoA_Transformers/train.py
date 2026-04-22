@@ -5,8 +5,7 @@ import argparse
 import os
 import re
 
-os.environ['HF_HOME']="/data/workspace/cache/huggingface"
-# os.environ['CUDA_VISIBLE_DEVICES']="0"
+# os.environ['HF_HOME']="/data/workspace/cache/huggingface"
 
 import torch
 import transformers
