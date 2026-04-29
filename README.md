@@ -1,157 +1,380 @@
 # MoA: Heterogeneous Mixture of Adapters for Parameter-Efficient Fine-Tuning of Large Language Models
 
-<!-- [![arXiv](https://img.shields.io/badge/arXiv-xxxx.xxxxxx-b31b1b.svg)](https://arxiv.org/abs/xxxx.xxxxxx) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) **[Paper Link (if published)]** | **[Project Demo (if applicable)]** | **[Hugging Face Model (if applicable)]** -->
+This repository contains the official implementation for the ACL 2026 Main paper **"MoA: Heterogeneous Mixture of Adapters for Parameter-Efficient Fine-Tuning of Large Language Models"**.
 
-This is the official PyTorch implementation for the paper "**MoA: Heterogeneous Mixture of Adapters for Parameter-Efficient Fine-Tuning of Large Language Models**".
+MoA builds a heterogeneous mixture over multiple adapter structures for parameter-efficient LLM fine-tuning. The repository provides:
 
-Our work introduces MoA (Mixture of Adapters), a novel approach that leverages a heterogeneous mixture of adapters to achieve superior parameter efficiency and performance when fine-tuning large language models.
+- **Soft MoA**: softly fuses outputs from multiple adapter experts.
+- **Sparse MoA**: activates adapter experts sparsely with small performance degradation.
+- **Baselines**: LoRA, Prompt Tuning, Parallel Adapter, UniPEFT, HydraLoRA, MoLoRA, AdaMoLE, and Top-K MoE-LoRA variants.
+- **Two code paths**:
+  - `LLaMA3_*`: implementation based on the native LLaMA 3 code path.
+  - `MoA_Transformers/`: implementation based on Hugging Face `transformers`, currently covering Qwen3 and LLaMA-style models.
 
-## Key Features
-* **Training enabled on 1 *  24G GPU for LLaMA-3.1-8B.**: 
-* **Heterogeneous Soft MoA & Sparse MoA**: 
-Two variants of MoA,
-Soft MoA achieves fine-grained integration by performing a weighted fusion of all expert outputs;
-Sparse MoA activates adapter experts sparsely based on their contribution, achieving this with negligible performance degradation.
-* **Soft-weighted MoE-LoRA baselines**:  HydraLoRA, MoLoRA
-* **Sparse MoE-LoRA baselines**: AdaMoLE, MoE-LoRA(TOP-K)
-* **Instance-level baselines**: Instance MoA, UniPEFT(LoRA, Prompt, Parallel adatper)
-* **Flash-attention2 supported**.
+## Repository Layout
 
+```text
+.
+├── README.md
+├── requirements.txt
+├── environment.yml
+├── datasets/
+│   ├── math_14k/
+│   ├── commonsense_15k/
+│   ├── math_commonsense/
+├── LLaMA3_soft_moa/
+├── LLaMA3_sparse_moa/
+├── LLaMA3_soft_moa_instance/
+├── LLaMA3_soft_moe/
+├── LLaMA3_sparse_moe/
+├── LLaMA3_UniPEFT/
+└── MoA_Transformers/
+```
 
-## TODO
+## Implementations
 
-- [x] Release Soft MoA code.
-- [x] Release Sparse MoA code.
-- [x] Release Soft MoE-LoRA baselines (LoRA, HydraLoRA, MoLoRA)
-- [x] Release Sparse MoE-LoRA baselines (AdaMoLE, MoE-LoRA(TOP-K))
-- [x] Release Instance-level Baselines.
-- [x] Qwen3 series & Llama series support: Now integrated based on the `transformers` library.
+### Native LLaMA 3 Implementation
 
-## `transformers` Library Support
+The `LLaMA3_*` directories use the original LLaMA-style checkpoint layout and tokenizer file. They share a similar workflow:
 
-We provide a version of MoA that is fully compatible with the Hugging Face `transformers` library, allowing for seamless integration with a wider range of models.
+1. `main_finetune.py`: fine-tune adapters.
+2. `extract_adapter_from_checkpoint.py`: extract adapter-only weights from a training checkpoint.
+3. `example.py`: run generation with the base model plus extracted adapter.
+4. `evaluate_math.py` / `evaluate_commonsense.py`: evaluate generated outputs.
 
-The code supporting **Qwen3 series** and **LLaMA series** base models based on the `transformers` library is located in the:
-* **`MoA_Transformers/`**
+Main directories:
 
-This implementation allows you to leverage the standard `AutoModelForCausalLM` interface for loading and fine-tuning.
+| Directory | Purpose |
+| --- | --- |
+| `LLaMA3_soft_moa/` | Soft MoA over heterogeneous adapter types, including LoRA, parallel adapter, and prompt modules. |
+| `LLaMA3_sparse_moa/` | Sparse MoA over heterogeneous adapter types, mainly LoRA and parallel adapter modules. |
+| `LLaMA3_soft_moa_instance/` | Instance-level Soft MoA variant. |
+| `LLaMA3_soft_moe/` | Soft MoE-style PEFT baselines, including LoRA, HydraLoRA, MoLoRA, prompt, and parallel adapter variants. |
+| `LLaMA3_sparse_moe/` | Sparse MoE-LoRA baselines, including AdaMoLE and Top-K MoE-LoRA. |
+| `LLaMA3_UniPEFT/` | UniPEFT-style baseline. |
+
+Each directory contains public example scripts in `exps/`.
+
+### Transformers Implementation
+
+`MoA_Transformers/` integrates MoA with a local modified copy of Hugging Face `transformers`.
+
+Key files:
+
+| Path | Purpose |
+| --- | --- |
+| `MoA_Transformers/train.py` | Fine-tuning entry point. Supports config files via `@configs/...`. |
+| `MoA_Transformers/test.py` | Generic testing entry point for choice-style tasks. |
+| `MoA_Transformers/test_math.py` | Math benchmark generation/testing entry point. |
+| `MoA_Transformers/evaluate_math.py` | Math evaluation script. |
+| `MoA_Transformers/evaluate_code.py` | Code evaluation script. |
+| `MoA_Transformers/src/` | PEFT wrapper, trainer, config, save/load, and MoA adapter code. |
+| `MoA_Transformers/transformers/` | Modified local `transformers` source tree. |
+| `MoA_Transformers/configs/` | Public training/testing configs for Qwen3-8B and Qwen3-14B Soft/Sparse MoA on `math_14k`. |
+
+The modified model files are:
+
+- `MoA_Transformers/transformers/src/transformers/models/qwen3/modeling_qwen3.py`
+- `MoA_Transformers/transformers/src/transformers/models/llama/modeling_llama.py`
+
+The repository also keeps alternate text copies such as `modeling_qwen3_softmoa.py.txt` and `modeling_llama_softmoa.py.txt`. Rename/copy these over the active `modeling_*.py` files only when you intentionally switch the model implementation variant.
 
 ## Installation
-**Install dependencies:**
 
-    ```
-    pip install -r requirements.txt
-    ```
+### pip
 
-## Usage
+```bash
+cd /path/to/moe
+pip install -r requirements.txt
+```
 
-### Prepare Pre-trained model
-MoA utilizes [Meta version](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct/tree/main/original) of `LLaMA3.1-8B` as the base model.
+For the `MoA_Transformers/` implementation:
 
+```bash
+cd /path/to/moe/MoA_Transformers
+pip install -r requirements.txt
+cd transformers
+pip install -e ".[torch]"
+```
 
-### Train,Inference,Evaluation
-**An examples for training, evaluation, and inference on Math dataset.**
-    ```
+## Data
 
-    # export CUDA_VISIBLE_DEVICES="0,1"
-    # Count the number of devices
-    num_devices=$(echo $CUDA_VISIBLE_DEVICES | awk -F',' '{print NF}')
+The repository includes task data under `datasets/`.
 
-    echo "Number of devices: $num_devices"
+Training datasets:
 
-    max_devices=1
+- `datasets/math_14k/`
+- `datasets/commonsense_15k/`
 
-    if [ "$num_devices" -gt "$max_devices" ]; then
-        num_devices=$max_devices
-        echo "max of devices: $max_devices"
-    fi
+Evaluation datasets:
 
-    # config
-    epochs=2
-    dataset="math_14k"
-    max_seq_len=300
-    min_gen_len=120
-    max_gen_len=200
+- Math: `datasets/math_commonsense/AddSub`, `AQuA`, `gsm8k`, `MultiArith`, `SingleEq`, `SVAMP`
+- Commonsense: `datasets/math_commonsense/boolq`, `piqa`, `social_i_qa`, `hellaswag`, `winogrande`, `ARC-Challenge`, `ARC-Easy`, `openbookqa`
 
-    lora_layers="0-32"
-    lora_rank=8
-    lora_targets="Q,K,V,O,FFN_DOWN"
-    lora_alpha=8
-    hydra_moe=True # hydra lora, Asymmetric LoRA
-    expert_num=1
+Most training files follow the Alpaca-style JSON format:
 
-    p_adapter_layers="0-32"
-    p_adapter_size=16
-    p_adapter_hydra=True
+```json
+{
+  "instruction": "...",
+  "input": "...",
+  "output": "..."
+}
+```
 
-    prompt_layers="0-32"
-    prompt_len=10
+## Running Native LLaMA 3 Experiments
 
-    swi_x=4
+Run commands from the specific `LLaMA3_*` directory.
 
-    blr=6e-3
-    flash_attention2=False
-    bf16=True
-    tag=""
-    batch_size_gpu=8
-    eff_batch_size=32
-    path="/home/"
-    output_dir="${path}/outputs/softmoa/${dataset}/b${eff_batch_size}_epoch${epochs}_warme1_loralayers${lora_layers}_lorar${lora_rank}_lora${lora_targets}_alpha${lora_alpha}_expertnum${expert_num}_hydra${hydra_moe}_padapter_layers${p_adapter_layers}_padaptersize${p_adapter_size}_padapterhydra${p_adapter_hydra}_prompt_layers${prompt_layers}_prompt_len${prompt_len}_swi_x${swi_x}_blr${blr}_maxseq${max_seq_len}_flashatt2${flash_attention2}_bf16${bf16}_${tag}/"
+Example: Soft MoA on `math_14k`.
 
-    # Train
-    torchrun --nproc_per_node $num_devices --master_port=3038 main_finetune.py \
-        --llama_path ${path}/pretrain_models/Meta-Llama-3.1-8B-Instruct/ \
-        --data_path ${path}/datasets/${dataset}/train.json \
-        --expert_num $expert_num \
-        --lora_layers $lora_layers \
-        --lora_rank ${lora_rank} \
-        --lora_targets $lora_targets \
-        --lora_alpha $lora_alpha \
-        --hydra_moe $hydra_moe \
-        --seed 0 \
-        --p_adapter_layers $p_adapter_layers \
-        --p_adapter_size $p_adapter_size \
-        --p_adapter_hydra $p_adapter_hydra \
-        --prompt_layers $prompt_layers\
-        --prompt_len $prompt_len \
-        --swi_x $swi_x \
-        --max_seq_len $max_seq_len \
-        --batch_size  $batch_size_gpu \
-        --accum_iter $(($eff_batch_size/$num_devices/$batch_size_gpu)) \
-        --epochs ${epochs} \
-        --warmup_epochs 1 \
-        --blr ${blr} \
-        --flash_attention2 $flash_attention2 \
-        --bf16 $bf16 \
-        --weight_decay 0.02 \
-        --output_dir $output_dir \
-        --num_workers 10
+```bash
+cd LLaMA3_soft_moa
+export CUDA_VISIBLE_DEVICES=0
+bash exps/finetuning_llama3-1_all_math14k_generate_evaluate_seed.sh
+```
 
-    checkpoint="${output_dir}checkpoint-$((epochs-1)).pth"
-    # get lora parameters
-    python extract_adapter_from_checkpoint.py --checkpoint $checkpoint
+Example: Sparse MoA on `math_14k`.
 
-    adapter_path="${output_dir}adapter.pth"
+```bash
+cd LLaMA3_sparse_moa
+export CUDA_VISIBLE_DEVICES=0
+bash exps/finetuning_llama3-1_all_math14k_generate_evaluate_seed.sh
+```
 
-    # Inference
-    test_dataset_l="AddSub AQuA gsm8k MultiArith SingleEq SVAMP"
+Example: Soft MoA on `commonsense_15k`.
 
-    for test_dataset in $test_dataset_l
-    do
-    save_path="${output_dir}${test_dataset}_predict_mingen${min_gen_len}.jsonl"
-    torchrun --nproc_per_node $num_devices --master_port=3038 example.py \
-        --ckpt_dir ${path}/pretrain_models/Meta-Llama-3.1-8B-Instruct/ \
-        --adapter_path $adapter_path \
-        --data_path ${path}/datasets/math_commonsense/${test_dataset}/test.json \
-        --save_path $save_path \
-        --max_gen_len $max_gen_len \
-        --min_gen_len $min_gen_len \
-        --max_batch_size 200 \
-        --temperature 0.1 \
-        --top_p 0.75
-    done
+```bash
+cd LLaMA3_soft_moa
+export CUDA_VISIBLE_DEVICES=0
+bash exps/finetuning_llama3-1_all_commonsense15k_generate_evaluate_seed.sh
+```
 
-    # Evaluation
-    save_path1="${output_dir}AddSub_predict_mingen${min_gen_len}.jsonl"
-    python evaluate_math.py --predict_file $save_path1
-    ```
+The scripts use a `path` variable, commonly set to `/home`, to construct model, dataset, and output paths:
+
+```bash
+path="/home"
+```
+
+Before running, edit this variable so it points to your workspace root. The scripts expect paths like:
+
+```text
+${path}/pretrain_models/Meta-Llama-3.1-8B-Instruct/
+${path}/datasets/math_14k/train.json
+${path}/datasets/math_commonsense/AddSub/test.json
+${path}/outputs/...
+```
+
+### Native Workflow Details
+
+The public scripts perform the following steps:
+
+1. Train:
+
+```bash
+torchrun --nproc_per_node ${num_devices} main_finetune.py \
+  --llama_path Meta-Llama-3.1-8B-Instruct/ \
+  --data_path datasets/math_14k/train.json \
+  --output_dir outputs/run_name/
+```
+
+2. Extract adapter weights:
+
+```bash
+python extract_adapter_from_checkpoint.py \
+  --checkpoint outputs/run_name/checkpoint-1.pth
+```
+
+This writes adapter files such as:
+
+```text
+adapter.pth
+adapter_params.json
+```
+
+3. Generate predictions:
+
+```bash
+torchrun --nproc_per_node ${num_devices} example.py \
+  --ckpt_dir Meta-Llama-3.1-8B-Instruct/ \
+  --adapter_path outputs/run_name/adapter.pth \
+  --data_path datasets/math_commonsense/AddSub/test.json \
+  --save_path outputs/run_name/AddSub_predict_mingen120.jsonl \
+  --max_gen_len 200 \
+  --min_gen_len 120
+```
+
+4. Evaluate:
+
+```bash
+python evaluate_math.py \
+  --predict_file outputs/run_name/AddSub_predict_mingen120.jsonl
+```
+
+For commonsense tasks:
+
+```bash
+python evaluate_commonsense.py \
+  --predict_file outputs/run_name/boolq_predict_mingen10.jsonl
+```
+
+## Running Baselines
+
+The baseline directories use the same train/extract/generate/evaluate workflow.
+
+Examples:
+
+```bash
+cd LLaMA3_soft_moe
+export CUDA_VISIBLE_DEVICES=0
+bash exps/finetuning_llama3-1_lora_math14k_generate_evaluate_seed.sh
+```
+
+```bash
+cd LLaMA3_soft_moe
+export CUDA_VISIBLE_DEVICES=0
+bash exps/finetuning_llama3-1_hydralora_math14k_generate_evaluate_seed.sh
+```
+
+```bash
+cd LLaMA3_sparse_moe
+export CUDA_VISIBLE_DEVICES=0
+bash exps/finetuning_llama3-1_adamole_lora_math14k_generate_evaluate_seed.sh
+```
+
+```bash
+cd LLaMA3_sparse_moe
+export CUDA_VISIBLE_DEVICES=0
+bash exps/finetuning_llama3-1_topkmoe_lora_math14k_generate_evaluate_seed.sh
+```
+
+## Running MoA_Transformers
+
+Install the local modified `transformers` first:
+
+```bash
+cd MoA_Transformers
+pip install -r requirements.txt
+cd transformers
+pip install -e ".[torch]"
+cd ..
+```
+
+Train Sparse MoA with Qwen3-8B on `math_14k`:
+
+```bash
+python train.py @configs/qwen3-8b_sparsemoa_math14k_train.config
+```
+
+Train Soft MoA with Qwen3-8B on `math_14k`:
+
+```bash
+python train.py @configs/qwen3-8b_softmoa_math14k_train.config
+```
+
+Test a trained Sparse MoA model:
+
+```bash
+python test.py @configs/qwen3-8b_sparsemoa_math14k_test.config
+```
+
+Evaluate math predictions:
+
+```bash
+python evaluate_math.py --predict_file /path/to/predictions/addsub_responses.jsonl
+```
+
+### Config Files
+
+Config files in `MoA_Transformers/configs/` are passed with Python argparse's `fromfile_prefix_chars='@'` syntax. For example:
+
+```text
+--model_path=Qwen/Qwen3-8B
+--data_path=/path/to/moe/datasets/math_14k
+--peft_type=sparsemoa
+--lora_rank=8
+--target_modules
+q_proj
+k_proj
+v_proj
+o_proj
+down_proj
+--max_length=300
+--batch_size=8
+--gradient_accumulation_steps=2
+--num_train_epochs=1
+--learning_rate=1e-4
+--lr_scheduler_type=constant_with_warmup
+--warmup_steps=200
+--weight_decay=0.0
+```
+
+Available public configs cover:
+
+- `qwen3-8b_softmoa_math14k_*`
+- `qwen3-8b_sparsemoa_math14k_*`
+- `qwen3-14b_softmoa_math14k_*`
+- `qwen3-14b_sparsemoa_math14k_*`
+- seed variants with `seed125` and `seed1225`
+
+By default, `train.py` saves outputs under:
+
+```text
+MoA_Transformers/outputs/<model>-<peft_type>-<dataset>/
+```
+
+For example:
+
+```text
+outputs/qwen3-8b-sparsemoa-math-14k/
+```
+
+## Important Hyperparameters
+
+Common native LLaMA 3 arguments:
+
+| Argument | Meaning |
+| --- | --- |
+| `--lora_layers` | Layer range for LoRA modules, e.g. `0-32`. |
+| `--lora_rank` | LoRA rank. |
+| `--lora_targets` | Target modules, e.g. `Q,K,V,O,FFN_DOWN`. |
+| `--lora_alpha` | LoRA scaling alpha. |
+| `--p_adapter_layers` | Layer range for parallel adapters. |
+| `--p_adapter_size` | Hidden size of parallel adapters. |
+| `--prompt_layers` | Layer range for prompt modules. |
+| `--prompt_len` | Prompt length. |
+| `--expert_num` | Number of experts for MoE-style baselines. |
+| `--swi_x` | Router hidden-size multiplier for SwiGLU router; `0` uses a linear router. |
+| `--max_threshold` | Sparse MoA activation threshold. |
+| `--batch_size` | Per-GPU batch size. |
+| `--accum_iter` | Gradient accumulation steps. |
+| `--bf16` | Use bfloat16. |
+| `--flash_attention2` | Enable FlashAttention 2 when available. |
+
+Common `MoA_Transformers` arguments:
+
+| Argument | Meaning |
+| --- | --- |
+| `--model_path` | HF model id or local HF model path. |
+| `--data_path` | HF dataset id or local dataset directory. |
+| `--peft_type` | `softmoa` or `sparsemoa`. |
+| `--target_modules` | Transformer module names to receive adapters. |
+| `--lora_rank` | Adapter rank. |
+| `--max_length` | Maximum tokenized sequence length. |
+| `--batch_size` | Per-device batch size. |
+| `--gradient_accumulation_steps` | Gradient accumulation steps. |
+| `--num_train_epochs` | Number of training epochs. |
+| `--learning_rate` | Training learning rate. |
+| `--seed` | Random seed. |
+
+## Citation
+
+If you find MoA useful in your projects, please consider citing our paper:
+
+```bibtex
+@article{cao2025moa,
+  title={MoA: Heterogeneous Mixture of Adapters for Parameter-Efficient Fine-Tuning of Large Language Models},
+  author={Cao, Jie and Lin, Tianwei and He, Hongyang and Yan, Rolan and Zhang, Wenqiao and Li, Juncheng and Zhang, Dongping and Tang, Siliang and Zhuang, Yueting},
+  journal={arXiv preprint arXiv:2506.05928},
+  year={2025}
+}
+```
